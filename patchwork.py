@@ -37,6 +37,40 @@ ASSETS   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 MENU_DIR = os.path.join(ASSETS, "menu")
 MAP_DIR  = os.path.join(ASSETS, "map", "patchwork-maps")
 
+# ──────────────────────────────────────────────
+#  SOUND HELPER
+# ──────────────────────────────────────────────
+SFX = {}
+def load_game_sounds():
+    names = {
+        'jump': 'JUMP.mp3',
+        'patched': 'PATCHED.mp3',
+        'select': 'SELECT.mp3',
+        'walk': 'WALK.mp3',
+        'zoom': 'ZOOM IN AND ZOOM OUT.mp3'
+    }
+    sounds_dir = os.path.join(ASSETS, "sounds")
+    for key, filename in names.items():
+        try:
+            path = os.path.join(sounds_dir, filename)
+            SFX[key] = pygame.mixer.Sound(path)
+            SFX[key].set_volume(0.6)
+        except:
+            SFX[key] = None
+
+def play_sfx(key):
+    if key in SFX and SFX[key]:
+        SFX[key].play()
+
+def play_bgm(filename):
+    try:
+        path = os.path.join(ASSETS, "sounds", filename)
+        pygame.mixer.music.load(path)
+        pygame.mixer.music.set_volume(0.5)
+        pygame.mixer.music.play(-1)
+    except Exception as e:
+        print(f"[WARN] Could not play BGM {filename}: {e}")
+
 
 # ──────────────────────────────────────────────
 #  FADE TRANSITION  (black overlay, 0→1→0 alpha)
@@ -347,6 +381,9 @@ class Player(pygame.sprite.Sprite):
         self.jump_speed = -300
         self.in_air = False
         self.collision_sprites = collision_sprites
+        self.active = True
+        self.walk_timer = 0
+        self.walk_freq = 0.35
 
     def import_assets(self):
         self.animations = {'idle': [], 'run': [], 'jump': []}
@@ -395,6 +432,7 @@ class Player(pygame.sprite.Sprite):
         if not self.in_air and getattr(self, 'active', True):
             self.direction.y = self.jump_speed
             self.in_air = True
+            play_sfx('jump')
 
     def update(self, dt):
         if not getattr(self, 'active', True):
@@ -405,6 +443,14 @@ class Player(pygame.sprite.Sprite):
         dx = 0
         if self.moving_right: dx = 1; self.flip = False
         elif self.moving_left: dx = -1; self.flip = True
+        
+        if dx != 0 and not self.in_air:
+            self.walk_timer += dt
+            if self.walk_timer >= self.walk_freq:
+                self.walk_timer = 0
+                play_sfx('walk')
+        else:
+            self.walk_timer = self.walk_freq # Ready for first step
         
         self.pos.x += dx * self.speed * dt
         self.hitbox.centerx = round(self.pos.x + self.rect.width / 2)
@@ -607,6 +653,13 @@ class GameScreen:
         self.font = pygame.font.SysFont("Consolas", 14)
         self.big_font = pygame.font.SysFont("Consolas", 20, bold=True)
         
+        try:
+            self.sky_img = pygame.image.load(os.path.join(ASSETS, "map", "SKY (MAP 1).png")).convert()
+        except Exception as e:
+            print(f"[WARN] Error loading sky image: {e}")
+            self.sky_img = pygame.Surface((SCREEN_W, SCREEN_H))
+            self.sky_img.fill('#333333')
+        
         self._build_map()
 
     def _build_map(self):
@@ -706,7 +759,11 @@ class GameScreen:
             self.visible_sprites.internal_w = self.internal_w
             self.visible_sprites.internal_h = self.internal_h
 
-        self.internal_surf.fill('#333333')
+        # Draw Sky with parallax
+        parallax_x = -(self.visible_sprites.offset.x * 0.2)
+        parallax_y = -(self.visible_sprites.offset.y * 0.2)
+        self.internal_surf.blit(self.sky_img, (parallax_x, parallax_y))
+        
         self.visible_sprites.custom_draw(self.player, self.tmx_data, self.mode, self.camera_manual_offset)
         
         # Draw NPCs (only in Creator Mode)
@@ -773,6 +830,7 @@ class GameScreen:
                 if self.gap_rect.colliderect(self.player.rect):
                     self.mode = "CREATOR"
                     self.target_zoom = 2.2
+                    play_sfx('zoom')
                     self.player.active = False
                     self.player.moving_left = False
                     self.player.moving_right = False
@@ -813,6 +871,12 @@ class GameScreen:
                                 self.missing_piece.dragging = True
                                 self.missing_piece.offset_x = self.missing_piece.rect.x - world_x
                                 self.missing_piece.offset_y = self.missing_piece.rect.y - world_y
+                                play_sfx('select')
+                            
+                            # Check NPC click
+                            for npc in self.npcs:
+                                if npc.rect.collidepoint(world_x, world_y):
+                                    play_sfx('select')
                         elif event.button == 3:
                             self.is_dragging_camera = True
                             
@@ -833,6 +897,7 @@ class GameScreen:
                                     
                                     self.visible_sprites.has_gap = False
                                     self.gap_patched = True
+                                    play_sfx('patched')
                                     if self.missing_piece:
                                         self.missing_piece.kill()
                                         self.missing_piece = None
@@ -842,6 +907,7 @@ class GameScreen:
                                         
                                     self.mode = "PLAY"
                                     self.target_zoom = 3.0
+                                    play_sfx('zoom')
                                     self.player.active = True
                                     # Reset player a bit before the gap so they can jump
                                     self.player.pos.x = self.gap_rect.left - 64
@@ -923,6 +989,7 @@ def main():
     clock  = pygame.time.Clock()
 
     # Pre-load game screen once (avoids re-parsing TMX on every play)
+    load_game_sounds()
     game_screen = GameScreen(screen, clock)
 
     state = "menu"
@@ -935,6 +1002,7 @@ def main():
             action = menu.run()
 
             if action == "start":
+                play_bgm('BGM (PLAIN).mp3')
                 # Fade out menu → fade in game
                 fade_transition(
                     screen, clock,
