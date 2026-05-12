@@ -40,8 +40,19 @@ MAP_DIR  = os.path.join(ASSETS, "map", "patchwork-maps")
 # ──────────────────────────────────────────────
 #  SOUND HELPER
 # ──────────────────────────────────────────────
+GLOBAL_VOLUME = 1.0
 SFX = {}
+SFX_BASE_VOL = {}
+
+def update_volumes():
+    """Applies the GLOBAL_VOLUME to all loaded sounds and current BGM."""
+    for key, sound in SFX.items():
+        if sound:
+            sound.set_volume(SFX_BASE_VOL.get(key, 0.6) * GLOBAL_VOLUME)
+    pygame.mixer.music.set_volume(0.5 * GLOBAL_VOLUME)
+
 def load_game_sounds():
+    global SFX, SFX_BASE_VOL
     names = {
         'jump': 'JUMP.mp3',
         'patched': 'PATCHED.mp3',
@@ -55,9 +66,10 @@ def load_game_sounds():
             path = os.path.join(sounds_dir, filename)
             SFX[key] = pygame.mixer.Sound(path)
             if key == 'walk':
-                SFX[key].set_volume(0.1) # Reduced volume for footsteps
+                SFX_BASE_VOL[key] = 0.1
             else:
-                SFX[key].set_volume(0.6)
+                SFX_BASE_VOL[key] = 0.6
+            SFX[key].set_volume(SFX_BASE_VOL[key] * GLOBAL_VOLUME)
         except:
             SFX[key] = None
 
@@ -69,7 +81,7 @@ def play_bgm(filename):
     try:
         path = os.path.join(ASSETS, "sounds", filename)
         pygame.mixer.music.load(path)
-        pygame.mixer.music.set_volume(0.5)
+        pygame.mixer.music.set_volume(0.5 * GLOBAL_VOLUME)
         pygame.mixer.music.play(-1)
     except Exception as e:
         print(f"[WARN] Could not play BGM {filename}: {e}")
@@ -166,7 +178,7 @@ class ImageButton:
 
     BASE_W = 272   # 15% smaller than original 320
 
-    def __init__(self, image_path, center_x, center_y, action):
+    def __init__(self, image_path, center_x, center_y, action, scale_override=None):
         self.action   = action
         self.hovered  = False
         self._hover_t = 0.0
@@ -174,8 +186,8 @@ class ImageButton:
         raw = pygame.image.load(image_path).convert_alpha()
         iw, ih = raw.get_size()
         aspect = ih / iw
-        self.base_w = self.BASE_W
-        self.base_h = int(self.BASE_W * aspect)
+        self.base_w = int(self.BASE_W * scale_override) if scale_override else self.BASE_W
+        self.base_h = int(self.base_w * aspect)
         self._img_normal = pygame.transform.smoothscale(raw, (self.base_w, self.base_h))
 
         self._img_hover = self._img_normal.copy()
@@ -206,8 +218,8 @@ class ImageButton:
         scaled = pygame.transform.smoothscale(img, (self.rect.width, self.rect.height))
         if self._hover_t > 0.05:
             glow = pygame.Surface((self.rect.width + 20, self.rect.height + 20), pygame.SRCALPHA)
-            pygame.draw.ellipse(glow, (255, 180, 60, int(60 * self._hover_t)),
-                                (0, 0, self.rect.width + 20, self.rect.height + 20))
+            pygame.draw.rect(glow, (255, 180, 60, int(60 * self._hover_t)),
+                             (0, 0, self.rect.width + 20, self.rect.height + 20), border_radius=15)
             surf.blit(glow, (self.rect.x - 10, self.rect.y - 10))
         surf.blit(scaled, self.rect.topleft)
 
@@ -315,6 +327,10 @@ class MainMenu:
         for fname, act, y in zip(names, acts, btn_y):
             path = os.path.join(MENU_DIR, fname)
             self.buttons.append(ImageButton(path, cx, y, act))
+            
+        # Add tutorial button
+        tut_path = os.path.join(MENU_DIR, "TUTORIAL_BUTTON.png")
+        self.buttons.append(ImageButton(tut_path, SCREEN_W - 120, SCREEN_H - 60, "tutorial", scale_override=0.6))
 
     # ── helpers ──────────────────────────────
     def _make_vignette(self):
@@ -379,6 +395,101 @@ class MainMenu:
             p.update()
 
 # ──────────────────────────────────────────────
+#  TUTORIAL SCREEN
+# ──────────────────────────────────────────────
+class TutorialScreen:
+    def __init__(self, screen):
+        self.screen = screen
+        self.clock = pygame.time.Clock()
+        self.page = 1
+        self.max_pages = 5
+        self.images = {}
+        for i in range(1, 6):
+            path = os.path.join(ASSETS, "tutorial", f"{i}.png")
+            try:
+                img = pygame.image.load(path).convert_alpha()
+                self.images[i] = pygame.transform.smoothscale(img, (SCREEN_W, SCREEN_H))
+            except Exception as e:
+                print(f"[WARN] Error loading tutorial page {i}: {e}")
+                surf = pygame.Surface((SCREEN_W, SCREEN_H))
+                surf.fill(C_BG)
+                self.images[i] = surf
+                
+        self.btn_size = 60
+        self.left_rect = pygame.Rect(20, SCREEN_H//2 - self.btn_size//2, self.btn_size, self.btn_size)
+        self.right_rect = pygame.Rect(SCREEN_W - 20 - self.btn_size, SCREEN_H//2 - self.btn_size//2, self.btn_size, self.btn_size)
+        
+        self.font = pygame.font.SysFont("Consolas", 24, bold=True)
+
+    def draw_frame(self, surf):
+        surf.blit(self.images[self.page], (0, 0))
+        
+        mouse_pos = pygame.mouse.get_pos()
+        
+        # Left button
+        if self.page > 1:
+            color = C_AMBER if self.left_rect.collidepoint(mouse_pos) else C_WHITE
+            surf_alpha = pygame.Surface((self.btn_size, self.btn_size), pygame.SRCALPHA)
+            pygame.draw.circle(surf_alpha, (0, 0, 0, 150), (self.btn_size//2, self.btn_size//2), self.btn_size//2)
+            surf.blit(surf_alpha, self.left_rect.topleft)
+            pygame.draw.polygon(surf, color, [
+                (self.left_rect.right - 15, self.left_rect.top + 15),
+                (self.left_rect.right - 15, self.left_rect.bottom - 15),
+                (self.left_rect.left + 15, self.left_rect.centery)
+            ])
+            
+        # Right button
+        if self.page < self.max_pages:
+            color = C_AMBER if self.right_rect.collidepoint(mouse_pos) else C_WHITE
+            surf_alpha = pygame.Surface((self.btn_size, self.btn_size), pygame.SRCALPHA)
+            pygame.draw.circle(surf_alpha, (0, 0, 0, 150), (self.btn_size//2, self.btn_size//2), self.btn_size//2)
+            surf.blit(surf_alpha, self.right_rect.topleft)
+            pygame.draw.polygon(surf, color, [
+                (self.right_rect.left + 15, self.right_rect.top + 15),
+                (self.right_rect.left + 15, self.right_rect.bottom - 15),
+                (self.right_rect.right - 15, self.right_rect.centery)
+            ])
+
+        # Draw "Press ESC to return"
+        esc_text = self.font.render("Press ESC to return", True, C_WHITE)
+        esc_rect = esc_text.get_rect(topleft=(30, 30))
+        bg_rect = esc_rect.inflate(20, 10)
+        bg_surf = pygame.Surface(bg_rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(bg_surf, (0, 0, 0, 150), bg_surf.get_rect(), border_radius=5)
+        surf.blit(bg_surf, (esc_rect.x - 10, esc_rect.y - 5))
+        surf.blit(esc_text, esc_rect)
+
+    def run(self):
+        while True:
+            self.clock.tick(FPS)
+            
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return "quit"
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        play_sfx('select')
+                        return "menu"
+                    elif event.key == pygame.K_LEFT or event.key == pygame.K_a:
+                        if self.page > 1:
+                            self.page -= 1
+                            play_sfx('select')
+                    elif event.key == pygame.K_RIGHT or event.key == pygame.K_d:
+                        if self.page < self.max_pages:
+                            self.page += 1
+                            play_sfx('select')
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    if self.page > 1 and self.left_rect.collidepoint(event.pos):
+                        self.page -= 1
+                        play_sfx('select')
+                    elif self.page < self.max_pages and self.right_rect.collidepoint(event.pos):
+                        self.page += 1
+                        play_sfx('select')
+            
+            self.draw_frame(self.screen)
+            pygame.display.flip()
+
+# ──────────────────────────────────────────────
 #  VICTORY SCREEN
 # ──────────────────────────────────────────────
 class VictoryScreen:
@@ -386,8 +497,8 @@ class VictoryScreen:
         self.screen = screen
         self.clock = pygame.time.Clock()
         
-        # Video background (reuse main menu)
-        vid_path = os.path.join(MENU_DIR, "main menu.mp4")
+        # Video background
+        vid_path = os.path.join(ASSETS, "VICTORY SCREEN.mp4")
         self.video = VideoBackground(vid_path)
         
         self.font = pygame.font.SysFont("Consolas", 48, bold=True)
@@ -395,7 +506,7 @@ class VictoryScreen:
         
         # Buttons
         cx = SCREEN_W // 2
-        names = ["PLAY_BUTTON.png", "QUIT_BUTTON.png"]
+        names = ["RESTART_BUTTON.png", "MENU_BUTTON.png"]
         acts = ["restart", "menu"]
         self.buttons = []
         for i, (fname, act) in enumerate(zip(names, acts)):
@@ -405,12 +516,7 @@ class VictoryScreen:
     def draw_frame(self, surf):
         self.video.draw(surf)
         
-        # Victory Text
-        title = self.font.render("YOU HAVE PATCHED THE WORLD!", True, C_AMBER)
-        tr = title.get_rect(center=(SCREEN_W // 2, 200))
-        # Shadow
-        pygame.draw.rect(surf, (0, 0, 0, 150), tr.inflate(20, 20), border_radius=10)
-        surf.blit(title, tr)
+        pass
         
         for btn in self.buttons:
             btn.draw(surf)
@@ -754,6 +860,19 @@ class GameScreen:
             print(f"[WARN] Error loading sky image: {e}")
             self.sky_img = pygame.Surface((SCREEN_W, SCREEN_H))
             self.sky_img.fill('#333333')
+            
+        # Pause state
+        self.is_paused = False
+        pause_path = os.path.join(MENU_DIR, "PAUSE_BUTTON.png")
+        self.pause_btn = ImageButton(pause_path, SCREEN_W - 80, SCREEN_H - 60, "pause", scale_override=0.4)
+        
+        cx = SCREEN_W // 2
+        p_names = ["RESSUME_BUTTON.png", "RESTART_BUTTON.png", "SETTINGS_BUTTON.png", "QUIT_BUTTON.png"]
+        p_acts = ["resume", "restart", "settings_game", "menu"]
+        self.pause_menu_btns = []
+        for i, (fname, act) in enumerate(zip(p_names, p_acts)):
+            path = os.path.join(MENU_DIR, fname)
+            self.pause_menu_btns.append(ImageButton(path, cx, 200 + i * 115, act))
         
         self._build_map()
 
@@ -894,6 +1013,8 @@ class GameScreen:
         parallax_x = -(self.visible_sprites.offset.x * 0.2)
         parallax_y = -(self.visible_sprites.offset.y * 0.2)
         self.internal_surf.blit(self.sky_img, (parallax_x, parallax_y))
+        # Duplicate the sky image on top to prevent glitching when camera pans up
+        self.internal_surf.blit(self.sky_img, (parallax_x, parallax_y - self.sky_img.get_height()))
         
         self.visible_sprites.custom_draw(self.player, self.tmx_data, self.mode, self.camera_manual_offset)
         
@@ -966,164 +1087,320 @@ class GameScreen:
             for p in self.snow_particles:
                 p.update(dt)
                 p.draw(surf)
+                
+        # Draw Pause menu or button
+        if self.is_paused:
+            overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 150))
+            surf.blit(overlay, (0, 0))
+            for btn in self.pause_menu_btns:
+                btn.draw(surf)
+        else:
+            self.pause_btn.draw(surf)
 
     def run(self):
         while True:
             dt = min(self.clock.tick(FPS) / 1000.0, 0.1)
-
-            # Check for map end
-            map_width = self.tmx_data.width * self.tmx_data.tilewidth
-            if self.player.pos.x > map_width - 32:
-                res = self.loop_map()
-                if res == "victory":
-                    return "victory"
-                
-            # Check for falling into gap
-            if self.mode == "PLAY" and 1 <= self.loop_count <= 5 and not self.gap_patched:
-                if self.gap_rect.colliderect(self.player.rect):
-                    self.mode = "CREATOR"
-                    self.target_zoom = 2.2
-                    play_sfx('zoom')
-                    self.player.active = False
-                    self.player.moving_left = False
-                    self.player.moving_right = False
-                    self.camera_manual_offset.x = self.visible_sprites.offset.x
-                    self.camera_manual_offset.y = self.visible_sprites.offset.y
+            
+            if not self.is_paused:
+                # Check for map end
+                map_width = self.tmx_data.width * self.tmx_data.tilewidth
+                if self.player.pos.x > map_width - 32:
+                    res = self.loop_map()
+                    if res == "victory":
+                        return "victory"
+                    
+                # Check for falling into gap
+                if self.mode == "PLAY" and 1 <= self.loop_count <= 5 and not self.gap_patched:
+                    if self.gap_rect.colliderect(self.player.rect):
+                        self.mode = "CREATOR"
+                        self.target_zoom = 2.2
+                        play_sfx('zoom')
+                        self.player.active = False
+                        self.player.moving_left = False
+                        self.player.moving_right = False
+                        self.camera_manual_offset.x = self.visible_sprites.offset.x
+                        self.camera_manual_offset.y = self.visible_sprites.offset.y
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     return "quit"
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
-                        return "menu"
-                        
-                if self.mode == "PLAY":
-                    if event.type == pygame.KEYDOWN:
-                        if event.key == pygame.K_LEFT or event.key == pygame.K_a:
-                            self.player.moving_left = True
-                        if event.key == pygame.K_RIGHT or event.key == pygame.K_d:
-                            self.player.moving_right = True
-                        if event.key == pygame.K_SPACE or event.key == pygame.K_w or event.key == pygame.K_UP:
-                            self.player.jump()
-                    
-                    if event.type == pygame.KEYUP:
-                        if event.key == pygame.K_LEFT or event.key == pygame.K_a:
-                            self.player.moving_left = False
-                        if event.key == pygame.K_RIGHT or event.key == pygame.K_d:
-                            self.player.moving_right = False
+                        if self.is_paused:
+                            self.is_paused = False
+                            play_sfx('select')
+                        else:
+                            self.is_paused = True
+                            play_sfx('select')
                             
-                elif self.mode == "CREATOR":
-                    if event.type == pygame.MOUSEBUTTONDOWN:
-                        if event.button == 1:
-                            # Translate mouse pos to scaled internal pos, then to world pos
-                            mx, my = event.pos
+                if self.is_paused:
+                    for btn in self.pause_menu_btns:
+                        act = btn.handle_event(event)
+                        if act == "resume":
+                            self.is_paused = False
+                            play_sfx('select')
+                        elif act == "restart":
+                            play_sfx('select')
+                            return "restart"
+                        elif act == "settings_game":
+                            play_sfx('select')
+                            return "settings_game"
+                        elif act == "menu":
+                            play_sfx('select')
+                            return "menu"
+                else:
+                    act = self.pause_btn.handle_event(event)
+                    if act == "pause":
+                        self.is_paused = True
+                        play_sfx('select')
+                        
+                    if self.mode == "PLAY":
+                        if event.type == pygame.KEYDOWN:
+                            if event.key == pygame.K_LEFT or event.key == pygame.K_a:
+                                self.player.moving_left = True
+                            if event.key == pygame.K_RIGHT or event.key == pygame.K_d:
+                                self.player.moving_right = True
+                            if event.key == pygame.K_SPACE or event.key == pygame.K_w or event.key == pygame.K_UP:
+                                self.player.jump()
+                        
+                        if event.type == pygame.KEYUP:
+                            if event.key == pygame.K_LEFT or event.key == pygame.K_a:
+                                self.player.moving_left = False
+                            if event.key == pygame.K_RIGHT or event.key == pygame.K_d:
+                                self.player.moving_right = False
+                                
+                    elif self.mode == "CREATOR":
+                        if event.type == pygame.MOUSEBUTTONDOWN:
+                            if event.button == 1:
+                                # Translate mouse pos to scaled internal pos, then to world pos
+                                mx, my = event.pos
+                                world_x = (mx / self.zoom) + self.camera_manual_offset.x
+                                world_y = (my / self.zoom) + self.camera_manual_offset.y
+                                
+                                if self.missing_piece and self.missing_piece.rect.collidepoint(world_x, world_y) and self.missing_piece.get_alpha_at(world_x, world_y):
+                                    self.missing_piece.dragging = True
+                                    self.missing_piece.offset_x = self.missing_piece.rect.x - world_x
+                                    self.missing_piece.offset_y = self.missing_piece.rect.y - world_y
+                                    play_sfx('select')
+                                
+                                # Check NPC click
+                                for npc in self.npcs:
+                                    if npc.rect.collidepoint(world_x, world_y):
+                                        play_sfx('select')
+                            elif event.button == 3:
+                                self.is_dragging_camera = True
+                                
+                        if event.type == pygame.MOUSEBUTTONUP:
+                            if event.button == 3:
+                                self.is_dragging_camera = False
+                            elif event.button == 1:
+                                if self.missing_piece and self.missing_piece.dragging:
+                                    self.missing_piece.dragging = False
+                                    # Check if dropped in gap
+                                    if self.gap_rect.colliderect(self.missing_piece.rect):
+                                        # Correct piece!
+                                        for layer in self.tmx_data.visible_layers:
+                                            if isinstance(layer, pytmx.TiledTileLayer) and layer.name in ["Collisions", "Collision"]:
+                                                for x, y, gid in layer:
+                                                    if self.gap_start_tx <= x <= self.gap_end_tx and gid != 0:
+                                                        Tile((x * 16, y * 16), [self.collision_sprites])
+                                        
+                                        self.visible_sprites.has_gap = False
+                                        self.gap_patched = True
+                                        self.game_msg = "World Patched! Proceed to Next Level"
+                                        self.game_msg_timer = 5.0
+                                        play_sfx('patched')
+                                        
+                                        if self.missing_piece:
+                                            self.missing_piece.kill()
+                                            self.missing_piece = None
+                                        
+                                        for npc in self.npcs:
+                                            npc.kill()
+                                            
+                                        self.mode = "PLAY"
+                                        self.target_zoom = 3.0
+                                        play_sfx('zoom')
+                                        self.player.active = True
+                                        self.player.pos.x = self.gap_rect.left - 64
+                                        self.player.pos.y = 100
+                                        self.player.hitbox.topleft = self.player.pos
+                                        self.player.rect.center = self.player.hitbox.center
+                        
+                        if event.type == pygame.MOUSEMOTION:
+                            if self.is_dragging_camera:
+                                dx, dy = event.rel
+                                self.camera_manual_offset.x -= dx / self.zoom
+                                self.camera_manual_offset.y -= dy / self.zoom
+                            elif self.missing_piece and self.missing_piece.dragging:
+                                mx, my = event.pos
+                                world_x = (mx / self.zoom) + self.camera_manual_offset.x
+                                world_y = (my / self.zoom) + self.camera_manual_offset.y
+                                self.missing_piece.rect.x = world_x + self.missing_piece.offset_x
+                                self.missing_piece.rect.y = world_y + self.missing_piece.offset_y
+                                
+                            # Handle NPC hovering
+                            mx, my = pygame.mouse.get_pos()
                             world_x = (mx / self.zoom) + self.camera_manual_offset.x
                             world_y = (my / self.zoom) + self.camera_manual_offset.y
                             
-                            if self.missing_piece and self.missing_piece.rect.collidepoint(world_x, world_y) and self.missing_piece.get_alpha_at(world_x, world_y):
-                                self.missing_piece.dragging = True
-                                self.missing_piece.offset_x = self.missing_piece.rect.x - world_x
-                                self.missing_piece.offset_y = self.missing_piece.rect.y - world_y
-                                play_sfx('select')
-                            
-                            # Check NPC click
+                            hovered_npc = None
                             for npc in self.npcs:
                                 if npc.rect.collidepoint(world_x, world_y):
-                                    play_sfx('select')
-                        elif event.button == 3:
-                            self.is_dragging_camera = True
-                            
-                    if event.type == pygame.MOUSEBUTTONUP:
-                        if event.button == 3:
-                            self.is_dragging_camera = False
-                        elif event.button == 1:
-                            if self.missing_piece and self.missing_piece.dragging:
-                                self.missing_piece.dragging = False
-                                # Check if dropped in gap
-                                if self.gap_rect.colliderect(self.missing_piece.rect):
-                                    # Correct piece!
-                                    for layer in self.tmx_data.visible_layers:
-                                        if isinstance(layer, pytmx.TiledTileLayer) and layer.name in ["Collisions", "Collision"]:
-                                            for x, y, gid in layer:
-                                                if self.gap_start_tx <= x <= self.gap_end_tx and gid != 0:
-                                                    Tile((x * 16, y * 16), [self.collision_sprites])
+                                    hovered_npc = npc
+                                    break
                                     
-                                    self.visible_sprites.has_gap = False
-                                    self.gap_patched = True
-                                    self.game_msg = "World Patched! Proceed to Next Level"
-                                    self.game_msg_timer = 5.0
-                                    play_sfx('patched')
-                                    
-                                    if self.missing_piece:
-                                        self.missing_piece.kill()
-                                        self.missing_piece = None
-                                    
-                                    for npc in self.npcs:
-                                        npc.kill()
-                                        
-                                    self.mode = "PLAY"
-                                    self.target_zoom = 3.0
-                                    play_sfx('zoom')
-                                    self.player.active = True
-                                    self.player.pos.x = self.gap_rect.left - 64
-                                    self.player.pos.y = 100
-                                    self.player.hitbox.topleft = self.player.pos
-                                    self.player.rect.center = self.player.hitbox.center
-                    
-                    if event.type == pygame.MOUSEMOTION:
-                        if self.is_dragging_camera:
-                            dx, dy = event.rel
-                            self.camera_manual_offset.x -= dx / self.zoom
-                            self.camera_manual_offset.y -= dy / self.zoom
-                        elif self.missing_piece and self.missing_piece.dragging:
-                            mx, my = event.pos
-                            world_x = (mx / self.zoom) + self.camera_manual_offset.x
-                            world_y = (my / self.zoom) + self.camera_manual_offset.y
-                            self.missing_piece.rect.x = world_x + self.missing_piece.offset_x
-                            self.missing_piece.rect.y = world_y + self.missing_piece.offset_y
-                            
-                        # Handle NPC hovering
-                        mx, my = pygame.mouse.get_pos()
-                        world_x = (mx / self.zoom) + self.camera_manual_offset.x
-                        world_y = (my / self.zoom) + self.camera_manual_offset.y
-                        
-                        hovered_npc = None
-                        for npc in self.npcs:
-                            if npc.rect.collidepoint(world_x, world_y):
-                                hovered_npc = npc
-                                break
-                                
-                        if hovered_npc:
-                            self.active_npc_hint = hovered_npc.hint_text
-                        else:
-                            self.active_npc_hint = None
+                            if hovered_npc:
+                                self.active_npc_hint = hovered_npc.hint_text
+                            else:
+                                self.active_npc_hint = None
             
-            self.npcs.update(dt)
-
-            self.visible_sprites.update(dt)
+            mouse = pygame.mouse.get_pos()
+            if self.is_paused:
+                for btn in self.pause_menu_btns:
+                    btn.update(mouse, dt)
+            else:
+                self.pause_btn.update(mouse, dt)
+                self.npcs.update(dt)
+                self.visible_sprites.update(dt)
+                
             self.draw_frame(self.screen)
             pygame.display.flip()
 
 # ──────────────────────────────────────────────
-#  PLACEHOLDER SCREENS
+#  SETTINGS SCREEN
 # ──────────────────────────────────────────────
-def placeholder_screen(screen, clock, label):
-    font  = pygame.font.SysFont("Consolas", 40, bold=True)
-    small = pygame.font.SysFont("Consolas", 24)
-    while True:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                return "quit"
-            if event.type == pygame.KEYDOWN:
-                if event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
-                    return "menu"
-        screen.fill(C_BG)
-        t = font.render(label, True, C_AMBER)
-        screen.blit(t, t.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2 - 30)))
-        h = small.render("Press ESC to return to Main Menu", True, C_GREY)
-        screen.blit(h, h.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2 + 30)))
-        pygame.display.flip()
-        clock.tick(FPS)
+class SettingsScreen:
+    def __init__(self, screen, return_state="menu"):
+        self.screen = screen
+        self.clock = pygame.time.Clock()
+        self.return_state = return_state
+        
+        self.font = pygame.font.SysFont("Consolas", 48, bold=True)
+        self.small_font = pygame.font.SysFont("Consolas", 24)
+        
+        cx = SCREEN_W // 2
+        self.slider_bar = pygame.Rect(cx - 150, 250, 300, 20)
+        
+        self.buttons = []
+        cred_path = os.path.join(MENU_DIR, "CREDITS_BUTTON.png")
+        self.buttons.append(ImageButton(cred_path, cx, 400, "credits"))
+        
+        back_img = "RESSUME_BUTTON.png" if return_state == "game" else "MENU_BUTTON.png"
+        back_path = os.path.join(MENU_DIR, back_img)
+        self.buttons.append(ImageButton(back_path, cx, 515, return_state))
+        
+        self.dragging_slider = False
+
+    def draw_frame(self, surf):
+        surf.fill(C_BG)
+        
+        title = self.font.render("SETTINGS", True, C_AMBER)
+        tr = title.get_rect(center=(SCREEN_W // 2, 100))
+        surf.blit(title, tr)
+        
+        vol_text = self.small_font.render(f"Global Volume: {int(GLOBAL_VOLUME * 100)}%", True, C_WHITE)
+        vr = vol_text.get_rect(center=(SCREEN_W // 2, 210))
+        surf.blit(vol_text, vr)
+        
+        pygame.draw.rect(surf, (100, 100, 100), self.slider_bar, border_radius=10)
+        
+        handle_x = self.slider_bar.left + int(GLOBAL_VOLUME * self.slider_bar.width)
+        handle_rect = pygame.Rect(0, 0, 20, 40)
+        handle_rect.center = (handle_x, self.slider_bar.centery)
+        pygame.draw.rect(surf, C_AMBER, handle_rect, border_radius=5)
+        
+        for btn in self.buttons:
+            btn.draw(surf)
+
+    def run(self):
+        global GLOBAL_VOLUME
+        while True:
+            dt = self.clock.tick(FPS) / 1000.0
+            mouse = pygame.mouse.get_pos()
+            
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return "quit"
+                if event.type == pygame.KEYDOWN:
+                    if event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
+                        return self.return_state
+                        
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    handle_x = self.slider_bar.left + int(GLOBAL_VOLUME * self.slider_bar.width)
+                    handle_rect = pygame.Rect(0, 0, 40, 60)
+                    handle_rect.center = (handle_x, self.slider_bar.centery)
+                    
+                    if handle_rect.collidepoint(event.pos) or self.slider_bar.collidepoint(event.pos):
+                        self.dragging_slider = True
+                        play_sfx('select')
+                        
+                if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                    self.dragging_slider = False
+                    
+                if event.type == pygame.MOUSEMOTION:
+                    if self.dragging_slider:
+                        rel_x = event.pos[0] - self.slider_bar.left
+                        GLOBAL_VOLUME = max(0.0, min(1.0, rel_x / self.slider_bar.width))
+                        update_volumes()
+                        
+                for btn in self.buttons:
+                    act = btn.handle_event(event)
+                    if act:
+                        play_sfx('select')
+                        if act == "credits":
+                            CreditsScreen(self.screen).run()
+                        else:
+                            return act
+                        
+            for btn in self.buttons:
+                btn.update(mouse, dt)
+                
+            self.draw_frame(self.screen)
+            pygame.display.flip()
+
+# ──────────────────────────────────────────────
+#  CREDITS SCREEN
+# ──────────────────────────────────────────────
+class CreditsScreen:
+    def __init__(self, screen):
+        self.screen = screen
+        self.clock = pygame.time.Clock()
+        try:
+            self.credits_img = pygame.image.load(os.path.join(ASSETS, "PATCHWORK CREDITS.png")).convert_alpha()
+            iw, ih = self.credits_img.get_size()
+            scale = min(SCREEN_W / iw, SCREEN_H / ih)
+            new_w, new_h = int(iw * scale), int(ih * scale)
+            self.credits_img = pygame.transform.smoothscale(self.credits_img, (new_w, new_h))
+            self.img_rect = self.credits_img.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2))
+        except:
+            self.credits_img = None
+            self.img_rect = None
+
+    def run(self):
+        while True:
+            self.clock.tick(FPS)
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    import sys
+                    sys.exit()
+                if event.type == pygame.KEYDOWN:
+                    if event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE, pygame.K_SPACE, pygame.K_RETURN):
+                        return "back"
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    return "back"
+                    
+            self.screen.fill((20, 20, 20))
+            if self.credits_img:
+                self.screen.blit(self.credits_img, self.img_rect)
+            else:
+                font = pygame.font.SysFont("Consolas", 48, bold=True)
+                t = font.render("CREDITS IMAGE NOT FOUND", True, C_AMBER)
+                self.screen.blit(t, t.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2)))
+                
+            pygame.display.flip()
 
 
 # ──────────────────────────────────────────────
@@ -1183,6 +1460,9 @@ def main():
                 state = "menu"
             elif action == "victory":
                 state = "victory"
+            elif action == "restart":
+                game_screen = GameScreen(screen, clock)
+                state = "game"
             else:
                 state = action
 
@@ -1200,7 +1480,29 @@ def main():
 
         # ── SETTINGS ──────────────────────────
         elif state == "settings":
-            state = placeholder_screen(screen, clock, "SETTINGS")
+            settings = SettingsScreen(screen, return_state="menu")
+            state = settings.run()
+
+        # ── SETTINGS_GAME ─────────────────────
+        elif state == "settings_game":
+            settings = SettingsScreen(screen, return_state="game")
+            state = settings.run()
+
+        # ── TUTORIAL ──────────────────────────
+        elif state == "tutorial":
+            tut = TutorialScreen(screen)
+            action = tut.run()
+            if action == "menu":
+                # Fade out tutorial -> fade in menu
+                new_menu = MainMenu(screen)
+                fade_transition(
+                    screen, clock,
+                    from_draw=lambda s: tut.draw_frame(s),
+                    to_draw  =lambda s: new_menu.draw_frame(s),
+                )
+                state = "menu"
+            else:
+                state = action
 
         # ── QUIT ──────────────────────────────
         elif state == "quit":
