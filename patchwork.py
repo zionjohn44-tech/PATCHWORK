@@ -46,7 +46,7 @@ def load_game_sounds():
         'jump': 'JUMP.mp3',
         'patched': 'PATCHED.mp3',
         'select': 'SELECT.mp3',
-        'walk': 'WALK.mp3',
+        'walk': 'WALK (TRY).mp3',
         'zoom': 'ZOOM IN AND ZOOM OUT.mp3'
     }
     sounds_dir = os.path.join(ASSETS, "sounds")
@@ -54,7 +54,10 @@ def load_game_sounds():
         try:
             path = os.path.join(sounds_dir, filename)
             SFX[key] = pygame.mixer.Sound(path)
-            SFX[key].set_volume(0.6)
+            if key == 'walk':
+                SFX[key].set_volume(0.1) # Reduced volume for footsteps
+            else:
+                SFX[key].set_volume(0.6)
         except:
             SFX[key] = None
 
@@ -418,10 +421,17 @@ class Player(pygame.sprite.Sprite):
             self.status = 'idle'
 
     def animate(self, dt):
+        old_frame = int(self.frame_index)
         self.frame_index += self.animation_speed * dt
         if self.frame_index >= len(self.animations[self.status]):
             self.frame_index = 0
             
+        new_frame = int(self.frame_index)
+        # Sync footsteps with animation frames (typically frames 1 and 4 in a standard run cycle)
+        if self.status == 'run' and not self.in_air:
+            if old_frame != new_frame and new_frame in [0, 1.]:
+                play_sfx('walk')
+                
         image = self.animations[self.status][int(self.frame_index)]
         if self.flip:
             self.image = pygame.transform.flip(image, True, False)
@@ -443,14 +453,6 @@ class Player(pygame.sprite.Sprite):
         dx = 0
         if self.moving_right: dx = 1; self.flip = False
         elif self.moving_left: dx = -1; self.flip = True
-        
-        if dx != 0 and not self.in_air:
-            self.walk_timer += dt
-            if self.walk_timer >= self.walk_freq:
-                self.walk_timer = 0
-                play_sfx('walk')
-        else:
-            self.walk_timer = self.walk_freq # Ready for first step
         
         self.pos.x += dx * self.speed * dt
         self.hitbox.centerx = round(self.pos.x + self.rect.width / 2)
@@ -640,7 +642,8 @@ class GameScreen:
             print(f"[WARN] Error loading map: {e}")
             self.tmx_data = pytmx.load_pygame(os.path.join(MAP_DIR, "try.tmx"), pixelalpha=True)
 
-        self.loop_count = 0
+        self.loop_count = 1 # Start at 1
+        self.current_world = 1
         self.mode = "PLAY"
         
         self.camera_manual_offset = pygame.math.Vector2()
@@ -742,6 +745,24 @@ class GameScreen:
 
     def loop_map(self):
         self.loop_count += 1
+        
+        # World Transition logic
+        if self.loop_count > 5:
+            self.loop_count = 1
+            if self.current_world == 1:
+                self.current_world = 2
+                tmx_path = os.path.join(MAP_DIR, "lvl2.tmx")
+                play_bgm('BGM (SNOW MAP).mp3')
+            else:
+                self.current_world = 1
+                tmx_path = os.path.join(MAP_DIR, "lvl1.tmx")
+                play_bgm('BGM (PLAIN).mp3')
+                
+            try:
+                self.tmx_data = pytmx.load_pygame(tmx_path, pixelalpha=True)
+            except Exception as e:
+                print(f"[WARN] Error transitioning world: {e}")
+
         self.mode = "PLAY"
         self._build_map()
 
@@ -751,13 +772,17 @@ class GameScreen:
         lerp_speed = 4.0
         if abs(self.zoom - self.target_zoom) > 0.01:
             self.zoom += (self.target_zoom - self.zoom) * dt * lerp_speed
-            self.internal_w = int(SCREEN_W / self.zoom)
-            self.internal_h = int(SCREEN_H / self.zoom)
-            self.internal_surf = pygame.Surface((self.internal_w, self.internal_h))
-            # Update CameraGroup with new surface dimensions
-            self.visible_sprites.display_surface = self.internal_surf
-            self.visible_sprites.internal_w = self.internal_w
-            self.visible_sprites.internal_h = self.internal_h
+            
+            # Optimization: Only recreate surface if dimensions actually change
+            nw = int(SCREEN_W / self.zoom)
+            nh = int(SCREEN_H / self.zoom)
+            if nw != self.internal_w or nh != self.internal_h:
+                self.internal_w, self.internal_h = nw, nh
+                self.internal_surf = pygame.Surface((self.internal_w, self.internal_h))
+                # Update CameraGroup with new surface dimensions
+                self.visible_sprites.display_surface = self.internal_surf
+                self.visible_sprites.internal_w = self.internal_w
+                self.visible_sprites.internal_h = self.internal_h
 
         # Draw Sky with parallax
         parallax_x = -(self.visible_sprites.offset.x * 0.2)
