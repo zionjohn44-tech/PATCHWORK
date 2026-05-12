@@ -1009,12 +1009,29 @@ class GameScreen:
                 self.visible_sprites.internal_w = self.internal_w
                 self.visible_sprites.internal_h = self.internal_h
 
-        # Draw Sky with parallax
+        # Draw Sky with parallax and tile horizontally, extending edge colors vertically
         parallax_x = -(self.visible_sprites.offset.x * 0.2)
         parallax_y = -(self.visible_sprites.offset.y * 0.2)
-        self.internal_surf.blit(self.sky_img, (parallax_x, parallax_y))
-        # Duplicate the sky image on top to prevent glitching when camera pans up
-        self.internal_surf.blit(self.sky_img, (parallax_x, parallax_y - self.sky_img.get_height()))
+        
+        sky_w = self.sky_img.get_width()
+        sky_h = self.sky_img.get_height()
+        
+        top_color = self.sky_img.get_at((0, 0))
+        bottom_color = self.sky_img.get_at((0, sky_h - 1))
+        
+        # Fill surface with the bottom color
+        self.internal_surf.fill(bottom_color)
+        
+        # Extend top color if sky is pulled down
+        if parallax_y > 0:
+            pygame.draw.rect(self.internal_surf, top_color, (0, 0, self.internal_w, int(parallax_y)))
+        
+        # Tile sky image ONLY horizontally
+        start_x = int(parallax_x % sky_w)
+        if start_x > 0: start_x -= sky_w
+        
+        for x in range(start_x, self.internal_w, sky_w):
+            self.internal_surf.blit(self.sky_img, (x, parallax_y))
         
         self.visible_sprites.custom_draw(self.player, self.tmx_data, self.mode, self.camera_manual_offset)
         
