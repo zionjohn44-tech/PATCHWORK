@@ -3,9 +3,9 @@ import pytmx
 import sys
 
 # Configuration
-SCREEN_WIDTH = 640
-SCREEN_HEIGHT = 320
-SCALE = 2 # Scale factor
+SCREEN_WIDTH = 1366
+SCREEN_HEIGHT = 768
+SCALE = 1 # Scale factor
 TILE_SIZE = 16
 FPS = 60
 

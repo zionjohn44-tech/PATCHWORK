@@ -17,7 +17,7 @@ def resource_path(relative_path):
 # ──────────────────────────────────────────────
 #  CONSTANTS
 # ──────────────────────────────────────────────
-SCREEN_W, SCREEN_H = 1280, 720
+SCREEN_W, SCREEN_H = 1366, 768
 FPS   = 60
 TITLE = "PATCHWORK"
 
@@ -251,6 +251,28 @@ class StitchParticle:
         s = self.size
         pygame.draw.line(surf, (r, g, b, alpha), (self.x - s, self.y), (self.x + s, self.y), 1)
         pygame.draw.line(surf, (r, g, b, alpha), (self.x, self.y - s), (self.x, self.y + s), 1)
+        
+class SnowParticle:
+    def __init__(self):
+        self.reset()
+        
+    def reset(self):
+        self.x = random.randint(0, SCREEN_W)
+        self.y = random.randint(-100, 0)
+        self.vx = random.uniform(-0.5, 0.5)
+        self.vy = random.uniform(1, 2)
+        self.size = random.randint(1, 3)
+        self.alpha = random.randint(100, 255)
+        
+    def update(self, dt):
+        self.x += self.vx
+        self.y += self.vy
+        if self.y > SCREEN_H:
+            self.reset()
+            
+    def draw(self, surf):
+        pygame.draw.circle(surf, (255, 255, 255, self.alpha), (int(self.x), int(self.y)), self.size)
+
 
 
 # ──────────────────────────────────────────────
@@ -355,6 +377,64 @@ class MainMenu:
             btn.update(mouse, dt)
         for p in self.particles:
             p.update()
+
+# ──────────────────────────────────────────────
+#  VICTORY SCREEN
+# ──────────────────────────────────────────────
+class VictoryScreen:
+    def __init__(self, screen):
+        self.screen = screen
+        self.clock = pygame.time.Clock()
+        
+        # Video background (reuse main menu)
+        vid_path = os.path.join(MENU_DIR, "main menu.mp4")
+        self.video = VideoBackground(vid_path)
+        
+        self.font = pygame.font.SysFont("Consolas", 48, bold=True)
+        self.small_font = pygame.font.SysFont("Consolas", 24)
+        
+        # Buttons
+        cx = SCREEN_W // 2
+        names = ["PLAY_BUTTON.png", "QUIT_BUTTON.png"]
+        acts = ["restart", "menu"]
+        self.buttons = []
+        for i, (fname, act) in enumerate(zip(names, acts)):
+            path = os.path.join(MENU_DIR, fname)
+            self.buttons.append(ImageButton(path, cx, 450 + i * 115, act))
+
+    def draw_frame(self, surf):
+        self.video.draw(surf)
+        
+        # Victory Text
+        title = self.font.render("YOU HAVE PATCHED THE WORLD!", True, C_AMBER)
+        tr = title.get_rect(center=(SCREEN_W // 2, 200))
+        # Shadow
+        pygame.draw.rect(surf, (0, 0, 0, 150), tr.inflate(20, 20), border_radius=10)
+        surf.blit(title, tr)
+        
+        for btn in self.buttons:
+            btn.draw(surf)
+
+    def run(self):
+        while True:
+            dt = self.clock.tick(FPS) / 1000.0
+            self.video.update(dt)
+            mouse = pygame.mouse.get_pos()
+            
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return "quit"
+                for btn in self.buttons:
+                    act = btn.handle_event(event)
+                    if act:
+                        self.video.release()
+                        return act
+            
+            for btn in self.buttons:
+                btn.update(mouse, dt)
+                
+            self.draw_frame(self.screen)
+            pygame.display.flip()
 
 
 # ──────────────────────────────────────────────
@@ -618,8 +698,14 @@ class CameraGroup(pygame.sprite.Group):
 
         for sprite in sorted(self.sprites(), key=lambda sprite: sprite.rect.bottom):
             if not isinstance(sprite, Tile):
+                # Hide missing piece in PLAY mode
+                if mode == "PLAY" and isinstance(sprite, MissingPiece):
+                    continue
                 offset_pos = sprite.rect.topleft - self.offset
                 self.display_surface.blit(sprite.image, offset_pos)
+
+# ──────────────────────────────────────────────
+
 
 # ──────────────────────────────────────────────
 #  GAME SCREEN  (patchwork 2.py logic)
@@ -642,7 +728,7 @@ class GameScreen:
             print(f"[WARN] Error loading map: {e}")
             self.tmx_data = pytmx.load_pygame(os.path.join(MAP_DIR, "try.tmx"), pixelalpha=True)
 
-        self.loop_count = 1 # Start at 1
+        self.loop_count = 0 # Start at 0 for exploration stage
         self.current_world = 1
         self.mode = "PLAY"
         
@@ -655,6 +741,12 @@ class GameScreen:
         
         self.font = pygame.font.SysFont("Consolas", 14)
         self.big_font = pygame.font.SysFont("Consolas", 20, bold=True)
+        self.notify_font = pygame.font.SysFont("Consolas", 32, bold=True)
+        
+        self.game_msg = "Welcome to the Plains World"
+        self.game_msg_timer = 5.0
+        
+        self.snow_particles = [SnowParticle() for _ in range(50)]
         
         try:
             self.sky_img = pygame.image.load(os.path.join(ASSETS, "map", "SKY (MAP 1).png")).convert()
@@ -718,9 +810,10 @@ class GameScreen:
             for obj in entities_layer:
                 if obj.name == "PlayerSpawn":
                     self.player = Player((obj.x, obj.y), [self.visible_sprites], self.collision_sprites)
-                elif obj.name in ["Tree1", "Tree2", "Tree3", "Tree4"]:
+                elif obj.name and obj.name.strip().startswith("Tree"):
                     tree_image = self.tmx_data.get_tile_image_by_gid(obj.gid)
-                    Tree((obj.x, obj.y), tree_image, [self.visible_sprites], obj.name)
+                    if tree_image:
+                        Tree((obj.x, obj.y), tree_image, [self.visible_sprites], obj.name.strip())
         except ValueError:
             pass
 
@@ -748,7 +841,11 @@ class GameScreen:
         
         # World Transition logic
         if self.loop_count > 5:
-            self.loop_count = 1
+            if self.current_world == 2:
+                # VICTORY!
+                return "victory"
+            
+            self.loop_count = 0
             if self.current_world == 1:
                 self.current_world = 2
                 tmx_path = os.path.join(MAP_DIR, "lvl2.tmx")
@@ -765,6 +862,15 @@ class GameScreen:
 
         self.mode = "PLAY"
         self._build_map()
+        
+        # Notification logic
+        if self.loop_count == 0:
+            w_name = "Plains World" if self.current_world == 1 else "Snow World"
+            self.game_msg = f"Welcome to the {w_name}"
+        else:
+            self.game_msg = f"Level {self.loop_count}"
+        
+        self.game_msg_timer = 5.0
 
     def draw_frame(self, surf):
         # Smooth zoom interpolation
@@ -840,6 +946,26 @@ class GameScreen:
 
         scaled_surface = pygame.transform.scale(self.internal_surf, (SCREEN_W, SCREEN_H))
         surf.blit(scaled_surface, (0, 0))
+        
+        # Draw game notifications
+        if self.game_msg_timer > 0:
+            self.game_msg_timer -= dt
+            msg_surf = self.notify_font.render(self.game_msg, True, C_WHITE)
+            msg_rect = msg_surf.get_rect(midtop=(SCREEN_W // 2, 40))
+            
+            # Draw a subtle background for readability
+            bg_rect = msg_rect.inflate(40, 20)
+            bg_surf = pygame.Surface(bg_rect.size, pygame.SRCALPHA)
+            pygame.draw.rect(bg_surf, (0, 0, 0, 150), bg_surf.get_rect(), border_radius=10)
+            surf.blit(bg_surf, bg_rect)
+            
+            surf.blit(msg_surf, msg_rect)
+            
+        # Draw Snow (only in Snow World)
+        if self.current_world == 2:
+            for p in self.snow_particles:
+                p.update(dt)
+                p.draw(surf)
 
     def run(self):
         while True:
@@ -848,7 +974,9 @@ class GameScreen:
             # Check for map end
             map_width = self.tmx_data.width * self.tmx_data.tilewidth
             if self.player.pos.x > map_width - 32:
-                self.loop_map()
+                res = self.loop_map()
+                if res == "victory":
+                    return "victory"
                 
             # Check for falling into gap
             if self.mode == "PLAY" and 1 <= self.loop_count <= 5 and not self.gap_patched:
@@ -913,7 +1041,7 @@ class GameScreen:
                                 self.missing_piece.dragging = False
                                 # Check if dropped in gap
                                 if self.gap_rect.colliderect(self.missing_piece.rect):
-                                    # Fix map collision
+                                    # Correct piece!
                                     for layer in self.tmx_data.visible_layers:
                                         if isinstance(layer, pytmx.TiledTileLayer) and layer.name in ["Collisions", "Collision"]:
                                             for x, y, gid in layer:
@@ -922,7 +1050,10 @@ class GameScreen:
                                     
                                     self.visible_sprites.has_gap = False
                                     self.gap_patched = True
+                                    self.game_msg = "World Patched! Proceed to Next Level"
+                                    self.game_msg_timer = 5.0
                                     play_sfx('patched')
+                                    
                                     if self.missing_piece:
                                         self.missing_piece.kill()
                                         self.missing_piece = None
@@ -934,7 +1065,6 @@ class GameScreen:
                                     self.target_zoom = 3.0
                                     play_sfx('zoom')
                                     self.player.active = True
-                                    # Reset player a bit before the gap so they can jump
                                     self.player.pos.x = self.gap_rect.left - 64
                                     self.player.pos.y = 100
                                     self.player.hitbox.topleft = self.player.pos
@@ -1050,7 +1180,20 @@ def main():
                     from_draw=lambda s: game_screen.draw_frame(s),
                     to_draw  =lambda s: new_menu.draw_frame(s),
                 )
-                # Transfer to full menu loop
+                state = "menu"
+            elif action == "victory":
+                state = "victory"
+            else:
+                state = action
+
+        # ── VICTORY ───────────────────────────
+        elif state == "victory":
+            vic = VictoryScreen(screen)
+            action = vic.run()
+            if action == "restart":
+                game_screen = GameScreen(screen, clock)
+                state = "game"
+            elif action == "menu":
                 state = "menu"
             else:
                 state = action
