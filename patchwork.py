@@ -333,23 +333,160 @@ class TiledMap:
         self.th = self.tmx_data.tileheight
         self.map_w = self.tmx_data.width  * self.tw
         self.map_h = self.tmx_data.height * self.th
+        self.scale = 3
         self._surface = self._render()
 
     def _render(self):
         surf = pygame.Surface((self.map_w, self.map_h))
         surf.fill(C_BG)
         td = self.tmx_data
+        
+        self.solid_rects = []
+        
         for layer in td.visible_layers:
             if isinstance(layer, pytmx.TiledTileLayer):
+                is_collision = (layer.name == "Collision")
                 for x, y, gid in layer:
                     tile = td.get_tile_image_by_gid(gid)
                     if tile:
                         surf.blit(tile, (x * self.tw, y * self.th))
-        return surf
+                        if is_collision and gid != 0:
+                            rect = pygame.Rect(x * self.tw * self.scale, y * self.th * self.scale, self.tw * self.scale, self.th * self.scale)
+                            self.solid_rects.append(rect)
+        
+        w, h = surf.get_size()
+        scaled = pygame.transform.scale(surf, (w * self.scale, h * self.scale))
+        self.map_w *= self.scale
+        self.map_h *= self.scale
+        return scaled
 
     @property
     def surface(self):
         return self._surface
+
+
+# ──────────────────────────────────────────────
+#  PLAYER
+# ──────────────────────────────────────────────
+class Player:
+    def __init__(self, x, y):
+        self.scale = 2
+        self.animations = {}
+        self.action = 'Idle'
+        self.frame_index = 0
+        self.update_time = pygame.time.get_ticks()
+        self.flip = False
+        
+        self.load_animations(self.scale)
+        self.image = self.animations[self.action][self.frame_index]
+        self.rect = self.image.get_rect()
+        self.rect.midbottom = (x, y)
+        
+        self.speed = 250
+        self.vel_y = 0
+        self.jump_power = -600
+        self.gravity = 1500
+        self.jumping = False
+
+    def load_animations(self, scale):
+        animation_types = ['Idle', 'Run', 'Jump']
+        frame_counts = {'Idle': 4, 'Run': 6, 'Jump': 12}
+        base_path = os.path.join(ASSETS, "map", "spritesheet", "Player")
+        
+        for animation in animation_types:
+            frames = []
+            path = os.path.join(base_path, f"{animation}.png")
+            try:
+                sheet = pygame.image.load(path).convert_alpha()
+                num_frames = frame_counts[animation]
+                w = sheet.get_width() // num_frames
+                h = sheet.get_height()
+                for i in range(num_frames):
+                    frame_surf = pygame.Surface((w, h), pygame.SRCALPHA)
+                    frame_surf.blit(sheet, (0, 0), (i * w, 0, w, h))
+                    scaled = pygame.transform.scale(frame_surf, (int(w * scale), int(h * scale)))
+                    frames.append(scaled)
+            except Exception as e:
+                print(f"[WARN] Could not load animation {animation}: {e}")
+                fb = pygame.Surface((32 * scale, 32 * scale))
+                fb.fill((255, 0, 255))
+                frames = [fb]
+            
+            self.animations[animation] = frames
+
+    def update(self, dt, map_h, solid_rects):
+        keys = pygame.key.get_pressed()
+        dx = 0
+        dy = 0
+        
+        if keys[pygame.K_LEFT] or keys[pygame.K_a]:
+            dx -= self.speed * dt
+            self.flip = True
+        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+            dx += self.speed * dt
+            self.flip = False
+            
+        if (keys[pygame.K_SPACE] or keys[pygame.K_w] or keys[pygame.K_UP]) and not self.jumping:
+            self.vel_y = self.jump_power
+            self.jumping = True
+            
+        self.vel_y += self.gravity * dt
+        dy += self.vel_y * dt
+        
+        # Horizontal movement and collision
+        self.rect.x += dx
+        for rect in solid_rects:
+            if self.rect.colliderect(rect):
+                if dx > 0:
+                    self.rect.right = rect.left
+                elif dx < 0:
+                    self.rect.left = rect.right
+                
+        # Vertical movement and collision
+        self.rect.y += dy
+        on_ground = False
+        for rect in solid_rects:
+            if self.rect.colliderect(rect):
+                if dy > 0: # falling
+                    self.rect.bottom = rect.top
+                    self.vel_y = 0
+                    self.jumping = False
+                    on_ground = True
+                elif dy < 0: # jumping up into something
+                    self.rect.top = rect.bottom
+                    self.vel_y = 0
+        
+        # Fallback if falling out of map completely
+        if self.rect.bottom > map_h:
+            self.rect.bottom = map_h
+            self.vel_y = 0
+            self.jumping = False
+            on_ground = True
+        
+        new_action = 'Idle'
+        if self.jumping and not on_ground:
+            new_action = 'Jump'
+        elif dx != 0:
+            new_action = 'Run'
+            
+        if new_action != self.action:
+            self.action = new_action
+            self.frame_index = 0
+            self.update_time = pygame.time.get_ticks()
+            
+        cooldown = 100
+        if pygame.time.get_ticks() - self.update_time > cooldown:
+            self.update_time = pygame.time.get_ticks()
+            self.frame_index += 1
+            if self.frame_index >= len(self.animations[self.action]):
+                self.frame_index = 0
+                
+        self.image = self.animations[self.action][self.frame_index]
+        if self.flip:
+            self.image = pygame.transform.flip(self.image, True, False)
+
+    def draw(self, surf, cam_x, cam_y):
+        surf.blit(self.image, (self.rect.x - cam_x, self.rect.y - cam_y))
 
 
 # ──────────────────────────────────────────────
@@ -363,21 +500,22 @@ class GameScreen:
         tmx_path = os.path.join(MAP_DIR, "try.tmx")
         self.tiled = TiledMap(tmx_path)
 
-        # Camera offset (simple — follows centre of map for now)
+        self.player = Player(200, self.tiled.map_h - 240)
+
         self.cam_x = 0
         self.cam_y = max(0, self.tiled.map_h - SCREEN_H)
 
-        # Font for ESC hint
         self.font = pygame.font.SysFont("Consolas", 20)
 
     def draw_frame(self, surf):
         surf.blit(self.tiled.surface, (-self.cam_x, -self.cam_y))
-        hint = self.font.render("ESC — Main Menu   ← → scroll", True, C_CREAM)
+        self.player.draw(surf, self.cam_x, self.cam_y)
+        
+        hint = self.font.render("ESC — Main Menu   WASD/Arrows to move", True, C_CREAM)
         hint.set_alpha(160)
         surf.blit(hint, (12, 12))
 
     def run(self):
-        scroll_speed = 200  # px/s
         while True:
             dt = self.clock.tick(FPS) / 1000.0
 
@@ -388,13 +526,11 @@ class GameScreen:
                     if event.key == pygame.K_ESCAPE:
                         return "menu"
 
-            keys = pygame.key.get_pressed()
-            if keys[pygame.K_LEFT] or keys[pygame.K_a]:
-                self.cam_x -= scroll_speed * dt
-            if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
-                self.cam_x += scroll_speed * dt
+            self.player.update(dt, self.tiled.map_h, self.tiled.solid_rects)
 
-            # Clamp camera
+            self.cam_x = self.player.rect.centerx - SCREEN_W // 2
+            self.cam_y = self.player.rect.centery - SCREEN_H // 2
+
             max_x = max(0, self.tiled.map_w - SCREEN_W)
             max_y = max(0, self.tiled.map_h - SCREEN_H)
             self.cam_x = max(0, min(self.cam_x, max_x))
