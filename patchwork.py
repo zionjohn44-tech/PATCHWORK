@@ -321,203 +321,463 @@ class MainMenu:
 
 
 # ──────────────────────────────────────────────
-#  TMX MAP RENDERER
+#  PLAYER (Sprite)
 # ──────────────────────────────────────────────
-class TiledMap:
-    """Loads a .tmx file and pre-renders all tile layers onto a surface."""
-
-    def __init__(self, tmx_path):
-        self.tmx_path = tmx_path
-        self.tmx_data = pytmx.load_pygame(tmx_path, pixelalpha=True)
-        self.tw = self.tmx_data.tilewidth
-        self.th = self.tmx_data.tileheight
-        self.map_w = self.tmx_data.width  * self.tw
-        self.map_h = self.tmx_data.height * self.th
-        self.scale = 3
-        self._surface = self._render()
-
-    def _render(self):
-        surf = pygame.Surface((self.map_w, self.map_h))
-        surf.fill(C_BG)
-        td = self.tmx_data
+class Player(pygame.sprite.Sprite):
+    def __init__(self, pos, groups, collision_sprites):
+        super().__init__(groups)
         
-        self.solid_rects = []
-        
-        for layer in td.visible_layers:
-            if isinstance(layer, pytmx.TiledTileLayer):
-                is_collision = (layer.name == "Collision")
-                for x, y, gid in layer:
-                    tile = td.get_tile_image_by_gid(gid)
-                    if tile:
-                        surf.blit(tile, (x * self.tw, y * self.th))
-                        if is_collision and gid != 0:
-                            rect = pygame.Rect(x * self.tw * self.scale, y * self.th * self.scale, self.tw * self.scale, self.th * self.scale)
-                            self.solid_rects.append(rect)
-        
-        w, h = surf.get_size()
-        scaled = pygame.transform.scale(surf, (w * self.scale, h * self.scale))
-        self.map_w *= self.scale
-        self.map_h *= self.scale
-        return scaled
-
-    @property
-    def surface(self):
-        return self._surface
-
-
-# ──────────────────────────────────────────────
-#  PLAYER
-# ──────────────────────────────────────────────
-class Player:
-    def __init__(self, x, y):
-        self.scale = 2
-        self.animations = {}
-        self.action = 'Idle'
+        self.import_assets()
         self.frame_index = 0
-        self.update_time = pygame.time.get_ticks()
+        self.animation_speed = 8
+        self.status = 'idle'
         self.flip = False
+        self.image = self.animations[self.status][self.frame_index]
         
-        self.load_animations(self.scale)
-        self.image = self.animations[self.action][self.frame_index]
-        self.rect = self.image.get_rect()
-        self.rect.midbottom = (x, y)
+        self.rect = self.image.get_rect(topleft=pos)
+        self.hitbox = self.rect.inflate(-12, -18) 
         
-        self.speed = 250
-        self.vel_y = 0
-        self.jump_power = -600
-        self.gravity = 1500
-        self.jumping = False
+        self.moving_left = False
+        self.moving_right = False
+        
+        self.speed = 100 
+        self.pos = pygame.math.Vector2(self.rect.topleft)
+        self.direction = pygame.math.Vector2()
+        self.gravity = 800
+        self.jump_speed = -300
+        self.in_air = False
+        self.collision_sprites = collision_sprites
 
-    def load_animations(self, scale):
-        animation_types = ['Idle', 'Run', 'Jump']
-        frame_counts = {'Idle': 4, 'Run': 6, 'Jump': 12}
-        base_path = os.path.join(ASSETS, "map", "spritesheet", "Player")
+    def import_assets(self):
+        self.animations = {'idle': [], 'run': [], 'jump': []}
         
-        for animation in animation_types:
-            frames = []
-            path = os.path.join(base_path, f"{animation}.png")
+        def get_frames(path, frame_width):
             try:
-                sheet = pygame.image.load(path).convert_alpha()
-                num_frames = frame_counts[animation]
-                w = sheet.get_width() // num_frames
-                h = sheet.get_height()
-                for i in range(num_frames):
-                    frame_surf = pygame.Surface((w, h), pygame.SRCALPHA)
-                    frame_surf.blit(sheet, (0, 0), (i * w, 0, w, h))
-                    scaled = pygame.transform.scale(frame_surf, (int(w * scale), int(h * scale)))
-                    frames.append(scaled)
+                full_surf = pygame.image.load(path).convert_alpha()
+                frames = []
+                for i in range(full_surf.get_width() // frame_width):
+                    x = i * frame_width
+                    frame = pygame.Surface((frame_width, full_surf.get_height()), pygame.SRCALPHA)
+                    frame.blit(full_surf, (0, 0), (x, 0, frame_width, full_surf.get_height()))
+                    frames.append(frame)
+                return frames
             except Exception as e:
-                print(f"[WARN] Could not load animation {animation}: {e}")
-                fb = pygame.Surface((32 * scale, 32 * scale))
-                fb.fill((255, 0, 255))
-                frames = [fb]
-            
-            self.animations[animation] = frames
+                print(f"[WARN] Error loading {path}: {e}")
+                fallback = pygame.Surface((32, 32))
+                fallback.fill((255, 0, 255))
+                return [fallback]
 
-    def update(self, dt, map_h, solid_rects):
-        keys = pygame.key.get_pressed()
-        dx = 0
-        dy = 0
-        
-        if keys[pygame.K_LEFT] or keys[pygame.K_a]:
-            dx -= self.speed * dt
-            self.flip = True
-        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
-            dx += self.speed * dt
-            self.flip = False
-            
-        if (keys[pygame.K_SPACE] or keys[pygame.K_w] or keys[pygame.K_UP]) and not self.jumping:
-            self.vel_y = self.jump_power
-            self.jumping = True
-            
-        self.vel_y += self.gravity * dt
-        dy += self.vel_y * dt
-        
-        # Horizontal movement and collision
-        self.rect.x += dx
-        for rect in solid_rects:
-            if self.rect.colliderect(rect):
-                if dx > 0:
-                    self.rect.right = rect.left
-                elif dx < 0:
-                    self.rect.left = rect.right
-                
-        # Vertical movement and collision
-        self.rect.y += dy
-        on_ground = False
-        for rect in solid_rects:
-            if self.rect.colliderect(rect):
-                if dy > 0: # falling
-                    self.rect.bottom = rect.top
-                    self.vel_y = 0
-                    self.jumping = False
-                    on_ground = True
-                elif dy < 0: # jumping up into something
-                    self.rect.top = rect.bottom
-                    self.vel_y = 0
-        
-        # Fallback if falling out of map completely
-        if self.rect.bottom > map_h:
-            self.rect.bottom = map_h
-            self.vel_y = 0
-            self.jumping = False
-            on_ground = True
-        
-        new_action = 'Idle'
-        if self.jumping and not on_ground:
-            new_action = 'Jump'
-        elif dx != 0:
-            new_action = 'Run'
-            
-        if new_action != self.action:
-            self.action = new_action
+        base = os.path.join(ASSETS, "map", "spritesheet", "Player")
+        self.animations['idle'] = get_frames(os.path.join(base, "Idle.png"), 32)
+        self.animations['run'] = get_frames(os.path.join(base, "Run.png"), 32)
+        self.animations['jump'] = get_frames(os.path.join(base, "Jump.png"), 32)
+
+    def get_status(self):
+        if self.in_air:
+            self.status = 'jump'
+        elif self.moving_left or self.moving_right:
+            self.status = 'run'
+        else:
+            self.status = 'idle'
+
+    def animate(self, dt):
+        self.frame_index += self.animation_speed * dt
+        if self.frame_index >= len(self.animations[self.status]):
             self.frame_index = 0
-            self.update_time = pygame.time.get_ticks()
             
-        cooldown = 100
-        if pygame.time.get_ticks() - self.update_time > cooldown:
-            self.update_time = pygame.time.get_ticks()
-            self.frame_index += 1
-            if self.frame_index >= len(self.animations[self.action]):
-                self.frame_index = 0
-                
-        self.image = self.animations[self.action][self.frame_index]
+        image = self.animations[self.status][int(self.frame_index)]
         if self.flip:
-            self.image = pygame.transform.flip(self.image, True, False)
+            self.image = pygame.transform.flip(image, True, False)
+        else:
+            self.image = image
 
-    def draw(self, surf, cam_x, cam_y):
-        surf.blit(self.image, (self.rect.x - cam_x, self.rect.y - cam_y))
+    def jump(self):
+        if not self.in_air and getattr(self, 'active', True):
+            self.direction.y = self.jump_speed
+            self.in_air = True
+
+    def update(self, dt):
+        if not getattr(self, 'active', True):
+            self.get_status()
+            self.animate(dt)
+            return
+
+        dx = 0
+        if self.moving_right: dx = 1; self.flip = False
+        elif self.moving_left: dx = -1; self.flip = True
+        
+        self.pos.x += dx * self.speed * dt
+        self.hitbox.centerx = round(self.pos.x + self.rect.width / 2)
+        self.horizontal_collision()
+        self.rect.centerx = self.hitbox.centerx
+
+        self.apply_gravity(dt)
+        self.vertical_collision()
+        self.rect.centery = self.hitbox.centery
+
+        self.get_status()
+        self.animate(dt)
+
+    def horizontal_collision(self):
+        for sprite in self.collision_sprites:
+            if sprite.rect.colliderect(self.hitbox):
+                if self.hitbox.centerx < sprite.rect.centerx: 
+                    self.hitbox.right = sprite.rect.left
+                else: 
+                    self.hitbox.left = sprite.rect.right
+                self.pos.x = self.hitbox.left - (self.rect.width - self.hitbox.width) / 2
+
+    def apply_gravity(self, dt):
+        self.direction.y += self.gravity * dt
+        self.pos.y += self.direction.y * dt
+        self.hitbox.centery = round(self.pos.y + self.rect.height / 2)
+
+    def vertical_collision(self):
+        self.in_air = True
+        for sprite in self.collision_sprites:
+            if sprite.rect.colliderect(self.hitbox):
+                if self.direction.y > 0: 
+                    self.hitbox.bottom = sprite.rect.top
+                    self.direction.y = 0
+                    self.in_air = False 
+                elif self.direction.y < 0: 
+                    self.hitbox.top = sprite.rect.bottom
+                    self.direction.y = 0
+                self.pos.y = self.hitbox.top - (self.rect.height - self.hitbox.height) / 2
 
 
 # ──────────────────────────────────────────────
-#  GAME SCREEN  (renders the TMX map with camera)
+#  MAP OBJECTS
+# ──────────────────────────────────────────────
+class Tile(pygame.sprite.Sprite):
+    def __init__(self, pos, groups):
+        super().__init__(groups)
+        self.image = pygame.Surface((16, 16))
+        self.image.fill((255,0,0))
+        self.image.set_alpha(0) # Invisible collision
+        self.rect = self.image.get_rect(topleft=pos)
+
+class Tree(pygame.sprite.Sprite):
+    def __init__(self, pos, surf, groups, tree_type):
+        super().__init__(groups)
+        self.image = surf
+        self.rect = self.image.get_rect(topleft=pos)
+        self.tree_type = tree_type 
+
+class MissingPiece(pygame.sprite.Sprite):
+    def __init__(self, pos, tmx_data, start_tx, end_tx, groups):
+        super().__init__(groups)
+        
+        tw = tmx_data.tilewidth
+        th = tmx_data.tileheight
+        width = (end_tx - start_tx + 1) * tw
+        height = tmx_data.height * th
+        
+        self.image = pygame.Surface((width, height), pygame.SRCALPHA)
+        
+        for layer in tmx_data.visible_layers:
+            if isinstance(layer, pytmx.TiledTileLayer):
+                for x, y, gid in layer:
+                    if start_tx <= x <= end_tx:
+                        tile = tmx_data.get_tile_image_by_gid(gid)
+                        if tile:
+                            self.image.blit(tile, ((x - start_tx) * tw, y * th))
+
+        self.rect = self.image.get_rect(topleft=pos)
+        self.dragging = False
+        self.offset_x = 0
+        self.offset_y = 0
+        self.particles = []
+
+    def get_alpha_at(self, world_x, world_y):
+        local_x = int(world_x - self.rect.x)
+        local_y = int(world_y - self.rect.y)
+        if 0 <= local_x < self.rect.width and 0 <= local_y < self.rect.height:
+            return self.image.get_at((local_x, local_y))[3] > 0
+        return False
+
+    def update(self, dt):
+        if random.random() < 0.5:
+            for _ in range(5):
+                px = random.randint(self.rect.left, self.rect.right - 1)
+                py = random.randint(self.rect.top, self.rect.bottom - 1)
+                if self.get_alpha_at(px, py):
+                    self.particles.append([px, py, random.uniform(2, 5)])
+                    break
+            
+        for p in self.particles[:]:
+            p[2] -= 3 * dt
+            p[1] -= 30 * dt
+            if p[2] <= 0:
+                self.particles.remove(p)
+
+class NPC(pygame.sprite.Sprite):
+    def __init__(self, pos, groups, hint_text):
+        super().__init__(groups)
+        self.image = pygame.Surface((32, 32), pygame.SRCALPHA)
+        self.rect = self.image.get_rect(center=pos)
+        self.hint_text = hint_text
+        self.time = random.uniform(0, 10)
+        self.base_y = self.rect.y
+        
+    def update(self, dt):
+        self.time += dt * 3
+        self.image.fill((0,0,0,0))
+        # Draw a simple pulsing glowing orb
+        pulse = int(math.sin(self.time) * 5)
+        pygame.draw.circle(self.image, (100, 200, 255), (16, 16), 10 + pulse // 2)
+        pygame.draw.circle(self.image, (255, 255, 255), (16, 16), 6)
+        
+        self.rect.y = self.base_y + int(math.sin(self.time * 2) * 4) # hover effect
+
+class CameraGroup(pygame.sprite.Group):
+    def __init__(self, internal_surf):
+        super().__init__()
+        self.display_surface = internal_surf
+        self.offset = pygame.math.Vector2()
+        self.internal_w = internal_surf.get_width()
+        self.internal_h = internal_surf.get_height()
+        
+        self.has_gap = False
+        self.gap_start_tx = 0
+        self.gap_end_tx = 0
+
+    def custom_draw(self, center_sprite, tmx_data, mode="PLAY", manual_offset=None):
+        if mode == "PLAY" and center_sprite:
+            self.offset.x = center_sprite.rect.centerx - self.internal_w // 2
+            self.offset.y = center_sprite.rect.centery - self.internal_h // 2
+            
+            map_width = tmx_data.width * tmx_data.tilewidth
+            map_height = tmx_data.height * tmx_data.tileheight
+            self.offset.x = max(0, min(self.offset.x, map_width - self.internal_w))
+            self.offset.y = max(0, min(self.offset.y, map_height - self.internal_h))
+            
+        elif mode == "CREATOR" and manual_offset:
+            self.offset.x = manual_offset.x
+            self.offset.y = manual_offset.y
+            # Camera freely pans!
+
+        for layer in tmx_data.visible_layers:
+            if isinstance(layer, pytmx.TiledTileLayer):
+                for x, y, gid in layer:
+                    if self.has_gap and self.gap_start_tx <= x <= self.gap_end_tx:
+                        continue # Skip drawing gap tiles
+                        
+                    tile = tmx_data.get_tile_image_by_gid(gid)
+                    if tile:
+                        pos = (x * tmx_data.tilewidth - self.offset.x, y * tmx_data.tileheight - self.offset.y)
+                        self.display_surface.blit(tile, pos)
+
+        for sprite in sorted(self.sprites(), key=lambda sprite: sprite.rect.bottom):
+            if not isinstance(sprite, Tile):
+                offset_pos = sprite.rect.topleft - self.offset
+                self.display_surface.blit(sprite.image, offset_pos)
+
+# ──────────────────────────────────────────────
+#  GAME SCREEN  (patchwork 2.py logic)
 # ──────────────────────────────────────────────
 class GameScreen:
     def __init__(self, screen, clock):
         self.screen = screen
         self.clock  = clock
 
-        tmx_path = os.path.join(MAP_DIR, "try.tmx")
-        self.tiled = TiledMap(tmx_path)
+        self.zoom = 3.0
+        self.target_zoom = 3.0
+        self.internal_w = int(SCREEN_W / self.zoom)
+        self.internal_h = int(SCREEN_H / self.zoom)
+        self.internal_surf = pygame.Surface((self.internal_w, self.internal_h))
 
-        self.player = Player(200, self.tiled.map_h - 240)
+        tmx_path = os.path.join(MAP_DIR, "lvl1.tmx")
+        try:
+            self.tmx_data = pytmx.load_pygame(tmx_path, pixelalpha=True)
+        except Exception as e:
+            print(f"[WARN] Error loading map: {e}")
+            self.tmx_data = pytmx.load_pygame(os.path.join(MAP_DIR, "try.tmx"), pixelalpha=True)
 
-        self.cam_x = 0
-        self.cam_y = max(0, self.tiled.map_h - SCREEN_H)
+        self.loop_count = 0
+        self.mode = "PLAY"
+        
+        self.camera_manual_offset = pygame.math.Vector2()
+        self.is_dragging_camera = False
+        
+        self.missing_piece = None
+        self.npcs = pygame.sprite.Group()
+        self.active_npc_hint = None
+        
+        self.font = pygame.font.SysFont("Consolas", 14)
+        self.big_font = pygame.font.SysFont("Consolas", 20, bold=True)
+        
+        self._build_map()
 
-        self.font = pygame.font.SysFont("Consolas", 20)
+    def _build_map(self):
+        self.visible_sprites = CameraGroup(self.internal_surf)
+        self.collision_sprites = pygame.sprite.Group()
+        self.missing_piece = None
+        self.npcs = pygame.sprite.Group()
+        self.active_npc_hint = None
+        self.gap_patched = False
+        
+        has_gap = (1 <= self.loop_count <= 5)
+        self.visible_sprites.has_gap = has_gap
+        
+        spawn_x, spawn_y = 100, 100
+        if self.loop_count == 1:
+            self.gap_start_tx, self.gap_end_tx = 40, 45
+            spawn_x = random.randint(100, 1000)
+            spawn_y = random.randint(0, 200)
+        elif self.loop_count == 2:
+            self.gap_start_tx, self.gap_end_tx = 30, 35
+            spawn_x = random.randint(100, 1000)
+            spawn_y = random.randint(-300, 500)
+        elif self.loop_count == 3:
+            self.gap_start_tx, self.gap_end_tx = 50, 55
+            spawn_x = random.randint(100, 1000)
+            spawn_y = random.randint(-600, 800)
+        elif self.loop_count == 4:
+            self.gap_start_tx, self.gap_end_tx = 20, 25
+            spawn_x = random.randint(100, 1000)
+            spawn_y = random.randint(-1000, 1200)
+        elif self.loop_count == 5:
+            self.gap_start_tx, self.gap_end_tx = 60, 65
+            spawn_x = random.randint(100, 1000)
+            spawn_y = random.randint(-1500, 1800)
+        else:
+            self.gap_start_tx, self.gap_end_tx = 40, 45
+
+        self.gap_rect = pygame.Rect(self.gap_start_tx * 16, 0, (self.gap_end_tx - self.gap_start_tx + 1) * 16, self.tmx_data.height * 16)
+        self.visible_sprites.gap_start_tx = self.gap_start_tx
+        self.visible_sprites.gap_end_tx = self.gap_end_tx
+
+        for layer in self.tmx_data.visible_layers:
+            if isinstance(layer, pytmx.TiledTileLayer) and layer.name in ["Collisions", "Collision"]:
+                for x, y, gid in layer:
+                    if has_gap and self.gap_start_tx <= x <= self.gap_end_tx:
+                        continue # No collision in the gap
+                    if gid != 0:
+                        Tile((x * 16, y * 16), [self.collision_sprites])
+
+        self.player = None
+        try:
+            entities_layer = self.tmx_data.get_layer_by_name("Entities")
+            for obj in entities_layer:
+                if obj.name == "PlayerSpawn":
+                    self.player = Player((obj.x, obj.y), [self.visible_sprites], self.collision_sprites)
+                elif obj.name in ["Tree1", "Tree2", "Tree3", "Tree4"]:
+                    tree_image = self.tmx_data.get_tile_image_by_gid(obj.gid)
+                    Tree((obj.x, obj.y), tree_image, [self.visible_sprites], obj.name)
+        except ValueError:
+            pass
+
+        if not self.player:
+            self.player = Player((100, 100), [self.visible_sprites], self.collision_sprites)
+            
+        if has_gap:
+            self.missing_piece = MissingPiece((spawn_x, spawn_y), self.tmx_data, self.gap_start_tx, self.gap_end_tx, [self.visible_sprites])
+            
+            # Spawn NPCs
+            if spawn_y < 0:
+                hint = "I saw it fly high into the sky!"
+            elif spawn_y > 320:
+                hint = "It's buried deep underground..."
+            elif spawn_x < 640:
+                hint = "Try looking towards the beginning of the path..."
+            else:
+                hint = "It's hidden further down the trail..."
+                
+            NPC((300, 200), [self.npcs], hint)
+            NPC((800, 200), [self.npcs], hint)
+
+    def loop_map(self):
+        self.loop_count += 1
+        self.mode = "PLAY"
+        self._build_map()
 
     def draw_frame(self, surf):
-        surf.blit(self.tiled.surface, (-self.cam_x, -self.cam_y))
-        self.player.draw(surf, self.cam_x, self.cam_y)
+        # Smooth zoom interpolation
+        dt = self.clock.get_time() / 1000.0
+        lerp_speed = 4.0
+        if abs(self.zoom - self.target_zoom) > 0.01:
+            self.zoom += (self.target_zoom - self.zoom) * dt * lerp_speed
+            self.internal_w = int(SCREEN_W / self.zoom)
+            self.internal_h = int(SCREEN_H / self.zoom)
+            self.internal_surf = pygame.Surface((self.internal_w, self.internal_h))
+            # Update CameraGroup with new surface dimensions
+            self.visible_sprites.display_surface = self.internal_surf
+            self.visible_sprites.internal_w = self.internal_w
+            self.visible_sprites.internal_h = self.internal_h
+
+        self.internal_surf.fill('#333333')
+        self.visible_sprites.custom_draw(self.player, self.tmx_data, self.mode, self.camera_manual_offset)
         
-        hint = self.font.render("ESC — Main Menu   WASD/Arrows to move", True, C_CREAM)
-        hint.set_alpha(160)
-        surf.blit(hint, (12, 12))
+        # Draw NPCs (only in Creator Mode)
+        if self.mode == "CREATOR":
+            for npc in self.npcs:
+                offset_pos = npc.rect.topleft - self.visible_sprites.offset
+                self.internal_surf.blit(npc.image, offset_pos)
+        
+        # Draw clues and particles in CREATOR mode
+        if self.mode == "CREATOR":
+            if self.missing_piece:
+                # Draw glow particles for the missing piece
+                for p in self.missing_piece.particles:
+                    px = int(p[0] - self.camera_manual_offset.x)
+                    py = int(p[1] - self.camera_manual_offset.y)
+                    pygame.draw.circle(self.internal_surf, (255, 215, 0), (px, py), int(p[2]))
+                    
+            mx, my = pygame.mouse.get_pos()
+            world_x = (mx / self.zoom) + self.camera_manual_offset.x
+            world_y = (my / self.zoom) + self.camera_manual_offset.y
+            
+            if self.active_npc_hint:
+                hint = self.font.render(f"Wisp: '{self.active_npc_hint}'", True, C_TEAL)
+                self.internal_surf.blit(hint, (mx / self.zoom + 15, my / self.zoom + 15))
+            else:
+                if self.loop_count <= 2 and self.missing_piece:
+                    piece_center_x = self.missing_piece.rect.centerx
+                    piece_center_y = self.missing_piece.rect.centery
+                    dist = math.hypot(world_x - piece_center_x, world_y - piece_center_y)
+                    
+                    if dist < 80:
+                        text = "HOT! Right here!"
+                        color = C_AMBER
+                    elif dist < 250:
+                        text = "Warm... getting closer"
+                        color = C_TEAL
+                    else:
+                        text = "Cold. Pan around to find it!"
+                        color = C_GREY
+                else:
+                    text = "Find Wisps to get clues!"
+                    color = C_GREY
+                    
+                hint = self.font.render(text, True, color)
+                self.internal_surf.blit(hint, (mx / self.zoom + 15, my / self.zoom + 15))
+            
+            mode_text = self.big_font.render(f"CREATOR MODE (Level {self.loop_count}) - Right click to pan!", True, C_AMBER)
+            self.internal_surf.blit(mode_text, (10, 10))
+
+        scaled_surface = pygame.transform.scale(self.internal_surf, (SCREEN_W, SCREEN_H))
+        surf.blit(scaled_surface, (0, 0))
 
     def run(self):
         while True:
-            dt = self.clock.tick(FPS) / 1000.0
+            dt = min(self.clock.tick(FPS) / 1000.0, 0.1)
+
+            # Check for map end
+            map_width = self.tmx_data.width * self.tmx_data.tilewidth
+            if self.player.pos.x > map_width - 32:
+                self.loop_map()
+                
+            # Check for falling into gap
+            if self.mode == "PLAY" and 1 <= self.loop_count <= 5 and not self.gap_patched:
+                if self.gap_rect.colliderect(self.player.rect):
+                    self.mode = "CREATOR"
+                    self.target_zoom = 2.2
+                    self.player.active = False
+                    self.player.moving_left = False
+                    self.player.moving_right = False
+                    self.camera_manual_offset.x = self.visible_sprites.offset.x
+                    self.camera_manual_offset.y = self.visible_sprites.offset.y
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -525,20 +785,103 @@ class GameScreen:
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         return "menu"
+                        
+                if self.mode == "PLAY":
+                    if event.type == pygame.KEYDOWN:
+                        if event.key == pygame.K_LEFT or event.key == pygame.K_a:
+                            self.player.moving_left = True
+                        if event.key == pygame.K_RIGHT or event.key == pygame.K_d:
+                            self.player.moving_right = True
+                        if event.key == pygame.K_SPACE or event.key == pygame.K_w or event.key == pygame.K_UP:
+                            self.player.jump()
+                    
+                    if event.type == pygame.KEYUP:
+                        if event.key == pygame.K_LEFT or event.key == pygame.K_a:
+                            self.player.moving_left = False
+                        if event.key == pygame.K_RIGHT or event.key == pygame.K_d:
+                            self.player.moving_right = False
+                            
+                elif self.mode == "CREATOR":
+                    if event.type == pygame.MOUSEBUTTONDOWN:
+                        if event.button == 1:
+                            # Translate mouse pos to scaled internal pos, then to world pos
+                            mx, my = event.pos
+                            world_x = (mx / self.zoom) + self.camera_manual_offset.x
+                            world_y = (my / self.zoom) + self.camera_manual_offset.y
+                            
+                            if self.missing_piece and self.missing_piece.rect.collidepoint(world_x, world_y) and self.missing_piece.get_alpha_at(world_x, world_y):
+                                self.missing_piece.dragging = True
+                                self.missing_piece.offset_x = self.missing_piece.rect.x - world_x
+                                self.missing_piece.offset_y = self.missing_piece.rect.y - world_y
+                        elif event.button == 3:
+                            self.is_dragging_camera = True
+                            
+                    if event.type == pygame.MOUSEBUTTONUP:
+                        if event.button == 3:
+                            self.is_dragging_camera = False
+                        elif event.button == 1:
+                            if self.missing_piece and self.missing_piece.dragging:
+                                self.missing_piece.dragging = False
+                                # Check if dropped in gap
+                                if self.gap_rect.colliderect(self.missing_piece.rect):
+                                    # Fix map collision
+                                    for layer in self.tmx_data.visible_layers:
+                                        if isinstance(layer, pytmx.TiledTileLayer) and layer.name in ["Collisions", "Collision"]:
+                                            for x, y, gid in layer:
+                                                if self.gap_start_tx <= x <= self.gap_end_tx and gid != 0:
+                                                    Tile((x * 16, y * 16), [self.collision_sprites])
+                                    
+                                    self.visible_sprites.has_gap = False
+                                    self.gap_patched = True
+                                    if self.missing_piece:
+                                        self.missing_piece.kill()
+                                        self.missing_piece = None
+                                    
+                                    for npc in self.npcs:
+                                        npc.kill()
+                                        
+                                    self.mode = "PLAY"
+                                    self.target_zoom = 3.0
+                                    self.player.active = True
+                                    # Reset player a bit before the gap so they can jump
+                                    self.player.pos.x = self.gap_rect.left - 64
+                                    self.player.pos.y = 100
+                                    self.player.hitbox.topleft = self.player.pos
+                                    self.player.rect.center = self.player.hitbox.center
+                    
+                    if event.type == pygame.MOUSEMOTION:
+                        if self.is_dragging_camera:
+                            dx, dy = event.rel
+                            self.camera_manual_offset.x -= dx / self.zoom
+                            self.camera_manual_offset.y -= dy / self.zoom
+                        elif self.missing_piece and self.missing_piece.dragging:
+                            mx, my = event.pos
+                            world_x = (mx / self.zoom) + self.camera_manual_offset.x
+                            world_y = (my / self.zoom) + self.camera_manual_offset.y
+                            self.missing_piece.rect.x = world_x + self.missing_piece.offset_x
+                            self.missing_piece.rect.y = world_y + self.missing_piece.offset_y
+                            
+                        # Handle NPC hovering
+                        mx, my = pygame.mouse.get_pos()
+                        world_x = (mx / self.zoom) + self.camera_manual_offset.x
+                        world_y = (my / self.zoom) + self.camera_manual_offset.y
+                        
+                        hovered_npc = None
+                        for npc in self.npcs:
+                            if npc.rect.collidepoint(world_x, world_y):
+                                hovered_npc = npc
+                                break
+                                
+                        if hovered_npc:
+                            self.active_npc_hint = hovered_npc.hint_text
+                        else:
+                            self.active_npc_hint = None
+            
+            self.npcs.update(dt)
 
-            self.player.update(dt, self.tiled.map_h, self.tiled.solid_rects)
-
-            self.cam_x = self.player.rect.centerx - SCREEN_W // 2
-            self.cam_y = self.player.rect.centery - SCREEN_H // 2
-
-            max_x = max(0, self.tiled.map_w - SCREEN_W)
-            max_y = max(0, self.tiled.map_h - SCREEN_H)
-            self.cam_x = max(0, min(self.cam_x, max_x))
-            self.cam_y = max(0, min(self.cam_y, max_y))
-
+            self.visible_sprites.update(dt)
             self.draw_frame(self.screen)
             pygame.display.flip()
-
 
 # ──────────────────────────────────────────────
 #  PLACEHOLDER SCREENS
